@@ -1,0 +1,688 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strike Zone</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden;background:#101820;color:white;font-family:Arial}
+canvas{display:block}
+#hud{position:fixed;inset:0;pointer-events:none;text-shadow:1px 1px 3px black}
+#top{position:absolute;top:12px;left:50%;transform:translateX(-50%);text-align:center;background:#111c;padding:10px 22px;border-radius:8px}
+#stats{position:absolute;bottom:15px;left:15px;background:#111c;padding:12px;line-height:1.8}
+#weaponHUD{position:absolute;bottom:15px;right:15px;background:#111c;padding:12px;text-align:right;line-height:1.8}
+#crosshair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:25px;color:#fff}
+#message{position:absolute;top:29%;width:100%;text-align:center;font-size:25px;color:#ffdc77;font-weight:bold}
+#menu{position:fixed;inset:0;z-index:10;background:#101820ed;display:flex;align-items:center;justify-content:center;text-align:center}
+.panel{width:min(620px,94vw);padding:26px;background:#1b2933;border:1px solid #607887;border-radius:12px}
+button,select{background:#29485a;color:white;border:1px solid #7795a6;padding:10px 14px;margin:4px;cursor:pointer;border-radius:5px}
+button:hover{background:#3b657b}
+#shop{display:none;position:fixed;z-index:8;top:50%;left:50%;transform:translate(-50%,-50%);width:min(460px,90vw);background:#17232df5;border:1px solid #789;padding:18px;border-radius:10px}
+#shop button{display:block;width:100%;text-align:left}
+#help{position:absolute;top:10px;left:10px;font-size:12px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div id="menu">
+<div class="panel">
+<h1>STRIKE ZONE</h1>
+<p id="menuText">A browser-based tactical FPS.</p>
+<p>WASD Move · Mouse Aim · Click Shoot · Shift Sprint</p>
+<p>R Reload · B Buy · E Plant/Defuse · ESC Pause</p>
+<label>Bot difficulty:
+<select id="difficulty">
+<option value="easy">Easy</option>
+<option value="normal" selected>Normal</option>
+<option value="hard">Hard</option>
+</select>
+</label>
+<br>
+<button onclick="startGame('T')">Play Terrorist</button>
+<button onclick="startGame('CT')">Play Counter-Terrorist</button>
+<button id="resumeButton" onclick="resumeGame()" style="display:none">Resume Game</button>
+</div>
+</div>
+
+<div id="hud">
+<div id="help">WASD Move | Mouse Aim | Click Shoot<br>R Reload | B Buy | E Plant/Defuse<br>1 Pistol | 2 SMG | 3 Rifle | 4 Sniper | ESC Pause</div>
+<div id="top"><b id="round">ROUND 1</b><br><span id="status">Waiting to deploy</span></div>
+<div id="stats">Team: <span id="team">-</span><br>Health: <span id="health">100</span><br>Money: $<span id="money">800</span><br>Kills: <span id="kills">0</span></div>
+<div id="weaponHUD">Weapon: <span id="weapon">Pistol</span><br>Ammo: <span id="ammo">12 / 48</span></div>
+<div id="crosshair">+</div>
+<div id="message"></div>
+</div>
+
+<div id="shop">
+<h2>WEAPON SHOP</h2>
+<p>Buy weapons during the buy phase.</p>
+<div id="shopItems"></div>
+<button onclick="closeShop()">Close (B)</button>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+const $=id=>document.getElementById(id);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x87979e);
+scene.fog=new THREE.Fog(0x87979e,30,75);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.1,150);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x404850,2));
+const sun=new THREE.DirectionalLight(0xffffff,2);
+sun.position.set(-10,20,10);
+sun.castShadow=true;
+scene.add(sun);
+
+const mat=c=>new THREE.MeshStandardMaterial({color:c});
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(60,60),mat(0x555e5d));
+floor.rotation.x=-Math.PI/2;
+floor.receiveShadow=true;
+scene.add(floor);
+
+const obstacles=[];
+const walls=[];
+
+function box(x,y,z,sx,sy,sz,color=0x727b7d){
+ const m=new THREE.Mesh(new THREE.BoxGeometry(sx,sy,sz),mat(color));
+ m.position.set(x,y,z);
+ m.castShadow=true;
+ m.receiveShadow=true;
+ scene.add(m);
+ obstacles.push({x,z,hx:sx/2,hz:sz/2});
+ walls.push(m);
+ return m;
+}
+
+box(0,1.5,-15,30,3,1);
+box(0,1.5,15,30,3,1);
+box(-15,1.5,0,1,3,30);
+box(15,1.5,0,1,3,30);
+box(-5,1,0,3,2,3,0x9b8668);
+box(5,1,4,4,2,2,0x9b8668);
+box(0,1,-7,3,2,2,0x69797b);
+box(-9,1,5,2,2,4,0x7c705e);
+box(9,1,-5,2,2,4,0x7c705e);
+
+const sites=[
+ {x:-10,z:-10,name:'A'},
+ {x:10,z:10,name:'B'}
+];
+
+for(const s of sites){
+ const marker=new THREE.Mesh(
+  new THREE.CylinderGeometry(2.2,2.2,.08,24),
+  new THREE.MeshBasicMaterial({color:0xffb52e,transparent:true,opacity:.5})
+ );
+ marker.position.set(s.x,.06,s.z);
+ scene.add(marker);
+}
+
+const guns={
+ Pistol:{cost:0,damage:34,mag:12,reserve:48,rate:300,range:45,spread:.012},
+ SMG:{cost:1500,damage:23,mag:25,reserve:100,rate:100,range:38,spread:.025},
+ Rifle:{cost:2700,damage:31,mag:30,reserve:90,rate:120,range:70,spread:.008},
+ Sniper:{cost:4750,damage:85,mag:5,reserve:20,rate:900,range:100,spread:.001}
+};
+
+let team='T',money=800,health=100,kills=0,roundNumber=1;
+let weapon='Pistol',phase='menu',timeLeft=15;
+let planted=false,plantSite=null,bombTime=40,hasBomb=true;
+let defuseTime=0,alive=true,locked=false,reloading=false;
+let lastShot=0,yaw=0,pitch=0,firing=false;
+let difficulty='normal',paused=false;
+let roundTimeout=null;
+
+const ammo={};
+const owned=new Set(['Pistol']);
+const player=new THREE.Vector3(0,1.7,10);
+const bots=[];
+const keys={};
+const raycaster=new THREE.Raycaster();
+
+for(const k in guns)ammo[k]={mag:guns[k].mag,reserve:guns[k].reserve};
+
+const settings={
+ easy:{speed:1.5,accuracy:.12,damage:6,fireRate:1500},
+ normal:{speed:2.2,accuracy:.28,damage:10,fireRate:950},
+ hard:{speed:3,accuracy:.5,damage:13,fireRate:650}
+};
+
+function makeBot(t,x,z){
+ const group=new THREE.Group();
+ const body=new THREE.Mesh(
+  new THREE.CylinderGeometry(.38,.42,1.1,10),
+  mat(t===team?0x2980b9:0xb63d32)
+ );
+ body.position.y=.85;
+ body.castShadow=true;
+ group.add(body);
+
+ const head=new THREE.Mesh(
+  new THREE.SphereGeometry(.27,12,10),
+  mat(0xd5ad89)
+ );
+ head.position.y=1.55;
+ head.castShadow=true;
+ group.add(head);
+
+ const gun=new THREE.Mesh(
+  new THREE.BoxGeometry(.6,.12,.13),
+  mat(0x222222)
+ );
+ gun.position.set(.3,1.2,-.2);
+ group.add(gun);
+
+ group.position.set(x,0,z);
+ scene.add(group);
+
+ return {
+  group,body,head,team:t,hp:100,alive:true,
+  nextShot:0,speed:settings[difficulty].speed
+ };
+}
+
+function spawnBots(){
+ for(const b of bots)scene.remove(b.group);
+ bots.length=0;
+ const enemy=team==='T'?'CT':'T';
+
+ for(let i=0;i<5;i++){
+  let x,z,attempts=0;
+  do{
+   x=(Math.random()-.5)*24;
+   z=(Math.random()-.5)*24;
+   attempts++;
+  }while(
+   (blocked(x,z,.5)||Math.hypot(x-player.x,z-player.z)<6)
+   &&attempts<100
+  );
+  bots.push(makeBot(enemy,x,z));
+ }
+}
+
+function startGame(t){
+ if(roundTimeout)clearTimeout(roundTimeout);
+ team=t;
+ difficulty=$('difficulty').value;
+ money=800;health=100;kills=0;roundNumber=1;
+ weapon='Pistol';phase='buy';timeLeft=15;
+ planted=false;plantSite=null;
+ hasBomb=t==='T';alive=true;paused=false;
+ reloading=false;firing=false;defuseTime=0;
+ owned.clear();owned.add('Pistol');
+
+ for(const k in guns)ammo[k]={mag:guns[k].mag,reserve:guns[k].reserve};
+
+ player.set(t==='T'?-11:11,1.7,t==='T'?10:-10);
+ yaw=t==='T'?Math.PI:0;
+ pitch=0;
+
+ spawnBots();
+ $('menu').style.display='none';
+ $('shop').style.display='none';
+ renderer.domElement.requestPointerLock();
+ updateHUD();
+}
+
+function resumeGame(){
+ paused=false;
+ $('menu').style.display='none';
+ renderer.domElement.requestPointerLock();
+}
+
+window.startGame=startGame;
+window.resumeGame=resumeGame;
+
+document.addEventListener('pointerlockchange',()=>{
+ locked=document.pointerLockElement===renderer.domElement;
+
+ if(!locked&&phase!=='menu'&&!paused&&$('shop').style.display!=='block'){
+  paused=true;
+  firing=false;
+  $('menuText').textContent='GAME PAUSED';
+  $('resumeButton').style.display='inline-block';
+  $('menu').style.display='flex';
+ }
+});
+
+document.addEventListener('mousemove',e=>{
+ if(!locked||paused)return;
+ yaw-=e.movementX*.002;
+ pitch-=e.movementY*.002;
+ pitch=Math.max(-1.35,Math.min(1.35,pitch));
+});
+
+document.addEventListener('keydown',e=>{
+ keys[e.code]=true;
+
+ if(e.code==='KeyB')toggleShop();
+ if(e.code==='KeyR')reload();
+ if(e.code==='KeyE')interact();
+
+ const slots={
+  Digit1:'Pistol',
+  Digit2:'SMG',
+  Digit3:'Rifle',
+  Digit4:'Sniper'
+ };
+
+ if(slots[e.code]&&owned.has(slots[e.code])){
+  weapon=slots[e.code];
+  reloading=false;
+ }
+
+ updateHUD();
+});
+
+document.addEventListener('keyup',e=>keys[e.code]=false);
+
+document.addEventListener('mousedown',e=>{
+ if(e.button!==0||phase==='menu'||paused)return;
+ if($('shop').style.display==='block')return;
+
+ if(!locked){
+  renderer.domElement.requestPointerLock();
+  return;
+ }
+
+ firing=true;
+ shoot();
+});
+
+document.addEventListener('mouseup',()=>firing=false);
+
+function toggleShop(){
+ if(phase!=='buy'||paused)return;
+
+ const shop=$('shop');
+ const opening=shop.style.display!=='block';
+ shop.style.display=opening?'block':'none';
+
+ if(opening){
+  firing=false;
+  document.exitPointerLock();
+ }else{
+  renderer.domElement.requestPointerLock();
+ }
+
+ renderShop();
+}
+
+function closeShop(){
+ $('shop').style.display='none';
+ if(!paused)renderer.domElement.requestPointerLock();
+}
+
+window.closeShop=closeShop;
+
+function renderShop(){
+ const list=$('shopItems');
+ list.innerHTML='';
+
+ for(const name of Object.keys(guns)){
+  const g=guns[name];
+  const b=document.createElement('button');
+
+  b.textContent=owned.has(name)
+   ?`${name} — OWNED`
+   :`${name} — $${g.cost} (${g.mag} rounds)`;
+
+  b.disabled=money<g.cost||owned.has(name);
+
+  b.onclick=()=>{
+   if(money<g.cost||owned.has(name))return;
+
+   money-=g.cost;
+   owned.add(name);
+   weapon=name;
+   ammo[name]={mag:g.mag,reserve:g.reserve};
+   renderShop();
+   updateHUD();
+  };
+
+  list.appendChild(b);
+ }
+}
+
+function reload(){
+ if(!alive||paused)return;
+ const g=guns[weapon],a=ammo[weapon];
+
+ if(reloading||a.mag>=g.mag||a.reserve<=0)return;
+
+ reloading=true;
+ const currentWeapon=weapon;
+
+ setTimeout(()=>{
+  const g=guns[currentWeapon],a=ammo[currentWeapon];
+  const n=Math.min(g.mag-a.mag,a.reserve);
+  a.mag+=n;
+  a.reserve-=n;
+  reloading=false;
+  updateHUD();
+ },1100);
+}
+
+function shoot(){
+ const now=performance.now();
+ const g=guns[weapon],a=ammo[weapon];
+
+ if(!alive||paused||!locked||
+   (phase!=='live'&&phase!=='bomb')||
+   reloading||now-lastShot<g.rate)return;
+
+ if(a.mag<=0){reload();return;}
+
+ lastShot=now;
+ a.mag--;
+
+ const dir=new THREE.Vector3(
+  Math.sin(yaw)*Math.cos(pitch),
+  Math.sin(pitch),
+  -Math.cos(yaw)*Math.cos(pitch)
+ );
+
+ dir.x+=(Math.random()-.5)*g.spread;
+ dir.y+=(Math.random()-.5)*g.spread;
+ dir.z+=(Math.random()-.5)*g.spread;
+ dir.normalize();
+
+ raycaster.set(camera.position,dir);
+ raycaster.far=g.range;
+
+ const wallHits=raycaster.intersectObjects(walls,false);
+ const wallDistance=wallHits.length?wallHits[0].distance:Infinity;
+
+ const hits=[];
+
+ for(const b of bots){
+  if(!b.alive||b.team===team)continue;
+
+  for(const part of [b.head,b.body]){
+   const hit=raycaster.intersectObject(part)[0];
+
+   if(hit&&hit.distance<wallDistance){
+    hits.push({
+     distance:hit.distance,
+     b,
+     head:part===b.head
+    });
+   }
+  }
+ }
+
+ hits.sort((a,b)=>a.distance-b.distance);
+
+ if(hits.length){
+  const h=hits[0];
+  h.b.hp-=h.head?100:g.damage;
+
+  if(h.b.hp<=0){
+   h.b.alive=false;
+   scene.remove(h.b.group);
+   money+=300;
+   kills++;
+
+   say(h.head?'HEADSHOT! +$300':'Enemy eliminated +$300');
+
+   if(bots.every(b=>!b.alive)){
+    endRound('All enemies eliminated!',team);
+   }
+  }else{
+   say(h.head?'HEADSHOT!':'Hit');
+  }
+ }
+
+ updateHUD();
+}
+
+function interact(){
+ if(!alive||paused)return;
+
+ if(team==='T'&&hasBomb&&!planted&&phase==='live'){
+  const s=sites.find(s=>
+   Math.hypot(player.x-s.x,player.z-s.z)<2.5
+  );
+
+  if(s){
+   planted=true;
+   plantSite=s;
+   hasBomb=false;
+   phase='bomb';
+   bombTime=40;
+   say('BOMB PLANTED AT SITE '+s.name);
+  }else{
+   say('Move closer to Site A or B');
+  }
+ }
+}
+
+function say(text){
+ $('message').textContent=text;
+}
+
+function endRound(text,winner){
+ if(phase==='ended'||phase==='menu')return;
+
+ phase='ended';
+ firing=false;
+ say(text);
+
+ money+=winner===team?3250:1400;
+
+ roundTimeout=setTimeout(()=>{
+  roundNumber++;
+  health=100;
+  alive=true;
+  planted=false;
+  plantSite=null;
+  hasBomb=team==='T';
+  phase='buy';
+  timeLeft=15;
+  defuseTime=0;
+  reloading=false;
+
+  player.set(
+   team==='T'?-11:11,
+   1.7,
+   team==='T'?10:-10
+  );
+
+  spawnBots();
+  say('');
+  updateHUD();
+ },3000);
+}
+
+function updateHUD(){
+ $('team').textContent=team;
+ $('health').textContent=health;
+ $('money').textContent=money;
+ $('kills').textContent=kills;
+ $('weapon').textContent=weapon;
+ $('ammo').textContent=ammo[weapon].mag+' / '+ammo[weapon].reserve;
+ $('round').textContent='ROUND '+roundNumber;
+
+ if(phase==='buy'){
+  $('status').textContent='BUY PHASE: '+Math.ceil(timeLeft)+'s';
+ }else if(phase==='live'){
+  $('status').textContent='Round: '+Math.ceil(timeLeft)+'s';
+ }else if(phase==='bomb'){
+  $('status').textContent='BOMB: '+Math.ceil(bombTime)+'s';
+ }else{
+  $('status').textContent=phase.toUpperCase();
+ }
+}
+
+function blocked(x,z,r=.4){
+ return obstacles.some(o=>
+  Math.abs(x-o.x)<o.hx+r&&
+  Math.abs(z-o.z)<o.hz+r
+ );
+}
+
+function movePlayer(dt){
+ if(!locked||!alive||paused||
+    $('shop').style.display==='block')return;
+
+ const f=new THREE.Vector3(
+  Math.sin(yaw),0,-Math.cos(yaw)
+ );
+
+ const r=new THREE.Vector3(-f.z,0,f.x);
+
+ let dx=0,dz=0;
+
+ if(keys.KeyW){dx+=f.x;dz+=f.z;}
+ if(keys.KeyS){dx-=f.x;dz-=f.z;}
+ if(keys.KeyA){dx-=r.x;dz-=r.z;}
+ if(keys.KeyD){dx+=r.x;dz+=r.z;}
+
+ const n=Math.hypot(dx,dz)||1;
+ const speed=keys.ShiftLeft?7:4.5;
+
+ dx=dx/n*speed*dt;
+ dz=dz/n*speed*dt;
+
+ if(!blocked(player.x+dx,player.z))player.x+=dx;
+ if(!blocked(player.x,player.z+dz))player.z+=dz;
+
+ player.x=Math.max(-14,Math.min(14,player.x));
+ player.z=Math.max(-14,Math.min(14,player.z));
+}
+
+function botCanSeePlayer(b){
+ const origin=b.group.position.clone();
+ origin.y=1.5;
+
+ const target=player.clone();
+ const direction=target.sub(origin);
+ const distance=direction.length();
+
+ direction.normalize();
+ raycaster.set(origin,direction);
+ raycaster.far=distance;
+
+ return raycaster.intersectObjects(walls,false).length===0;
+}
+
+function updateBots(dt){
+ if(phase!=='live'&&phase!=='bomb')return;
+
+ const cfg=settings[difficulty];
+
+ for(const b of bots){
+  if(!b.alive)continue;
+
+  const p=b.group.position;
+  const dx=player.x-p.x;
+  const dz=player.z-p.z;
+  const d=Math.hypot(dx,dz)||1;
+
+  if(d>5){
+   const nx=p.x+(dx/d)*b.speed*dt;
+   const nz=p.z+(dz/d)*b.speed*dt;
+
+   if(!blocked(nx,nz,.4)){
+    p.x=nx;
+    p.z=nz;
+   }
+  }
+
+  b.group.rotation.y=Math.atan2(dx,dz);
+
+  if(d<18&&performance.now()>b.nextShot&&alive){
+   b.nextShot=performance.now()+cfg.fireRate+Math.random()*500;
+
+   if(botCanSeePlayer(b)&&Math.random()<cfg.accuracy){
+    health-=cfg.damage;
+
+    if(health<=0){
+     health=0;
+     alive=false;
+     endRound('You were eliminated!',team==='T'?'CT':'T');
+    }
+   }
+  }
+ }
+}
+
+let previous=performance.now();
+
+function animate(now){
+ requestAnimationFrame(animate);
+
+ const dt=Math.min((now-previous)/1000,.05);
+ previous=now;
+
+ if(!paused&&phase!=='menu'&&phase!=='ended'){
+  if(phase==='buy'){
+   timeLeft-=dt;
+
+   if(timeLeft<=0){
+    phase='live';
+    timeLeft=100;
+    say('ROUND START');
+    closeShop();
+   }
+  }else if(phase==='live'){
+   timeLeft-=dt;
+
+   if(timeLeft<=0){
+    endRound('Time expired!',team==='CT'?'CT':'T');
+   }
+  }else if(phase==='bomb'){
+   bombTime-=dt;
+
+   if(bombTime<=0){
+    endRound('Bomb exploded!','T');
+   }
+
+   if(team==='CT'&&planted&&keys.KeyE&&
+      Math.hypot(player.x-plantSite.x,player.z-plantSite.z)<3){
+    defuseTime+=dt;
+
+    if(defuseTime>=4){
+     endRound('Bomb defused!','CT');
+    }
+   }else{
+    defuseTime=0;
+   }
+  }
+
+  movePlayer(dt);
+  updateBots(dt);
+
+  camera.position.copy(player);
+  camera.rotation.order='YXZ';
+  camera.rotation.y=yaw;
+  camera.rotation.x=pitch;
+
+  if(firing&&locked)shoot();
+  updateHUD();
+ }
+
+ renderer.render(scene,camera);
+}
+
+addEventListener('resize',()=>{
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+
+updateHUD();
+animate(performance.now());
+</script>
+</body>
+</html>
