@@ -53,6 +53,9 @@ function updateBots(dt){const cfg=difficulties[difficulty];for(const b of bots){
 let previous=performance.now();function animate(now){requestAnimationFrame(animate);const dt=Math.min((now-previous)/1000,.05);previous=now;if(!paused&&phase!=='menu'){if(phase==='buy'){clock-=dt;if(clock<=0){phase='live';clock=120;closeShop();say('ROUND START');}}else if(phase==='live'){clock-=dt;if(clock<=0)endRound('Time expired!','CT');}else if(phase==='bomb'){bombClock-=dt;if(bombClock<=0)endRound('Bomb exploded!','T');if(team==='CT'&&planted&&keys.KeyE&&plantSite&&Math.hypot(player.x-plantSite.x,player.z-plantSite.z)<4){defuse+=dt;if(defuse>=4)endRound('Bomb defused!','CT');}else defuse=0;}
 // Camera rotation is updated BEFORE movement, shooting and bot updates.
 camera.rotation.set(pitch,yaw,0,'YXZ');camera.position.copy(player);if(phase!=='ended'){move(dt);camera.position.copy(player);updateBots(dt);}else updateBots(dt);if(firing&&locked)shoot();recoil=Math.max(0,recoil-dt*.5);gunGroup.position.y=-.29+recoil;flashTime=Math.max(0,flashTime-dt);for(let i=tracers.length-1;i>=0;i--){const t=tracers[i];t.life-=dt;t.line.material.opacity=Math.max(0,t.life/.12);if(t.life<=0){scene.remove(t.line);t.line.geometry.dispose();t.line.material.dispose();tracers.splice(i,1);}}updateHUD();}
-renderer.autoClear=true;renderer.render(scene,camera);renderer.clearDepth();gunCamera.aspect=camera.aspect;gunCamera.updateProjectionMatrix();renderer.render(gunScene,gunCamera);}
+renderer.autoClear=false;
+renderer.clear();
+renderer.render(scene,camera);
+renderer.clearDepth();gunCamera.aspect=camera.aspect;gunCamera.updateProjectionMatrix();renderer.render(gunScene,gunCamera);}
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();gunCamera.aspect=camera.aspect;gunCamera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});updateHUD();animate(performance.now());
 </script></body></html>
